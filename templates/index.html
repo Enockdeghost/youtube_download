@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .fade-in { animation: fadeIn 0.5s ease-in; }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .progress-bar {
+            transition: width 0.3s ease;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-50 to-indigo-100 min-h-screen font-sans antialiased">
+
+    <div class="container mx-auto px-4 py-8 max-w-7xl">
+        <!-- Header -->
+        <header class="text-center mb-8">
+            <h1 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-600 to-purple-600 mb-2">
+                🎬 YouTube Downloader Pro
+            </h1>
+            <p class="text-gray-600 text-lg">Paste any YouTube link – supports videos & playlists</p>
+        </header>
+
+        <div class="flex flex-col lg:flex-row gap-6">
+            <!-- Main Content -->
+            <div class="lg:w-3/4">
+                <!-- Input Section -->
+                <div class="bg-white/70 backdrop-blur-sm rounded-2xl shadow-xl p-6 mb-6 border border-white/50">
+                    <div class="flex flex-col md:flex-row gap-4">
+                        <input type="text" id="videoUrl" placeholder="https://www.youtube.com/watch?v=... or playlist link" 
+                               class="flex-1 px-5 py-4 border border-gray-200 rounded-xl focus:ring-4 focus:ring-blue-200 focus:border-blue-400 transition text-lg">
+                        <button onclick="fetchInfo()" id="fetchBtn" 
+                                class="bg-gradient-to-r from-blue-600 to-indigo-600 text-white px-8 py-4 rounded-xl font-semibold hover:from-blue-700 hover:to-indigo-700 transition shadow-md hover:shadow-lg flex items-center justify-center gap-2">
+                            <span>Analyze</span>
+                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 9l3 3m0 0l-3 3m3-3H8m13 0a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Loading -->
+                <div id="loading" class="hidden flex justify-center items-center py-12">
+                    <div class="loader"></div>
+                    <span class="ml-3 text-gray-500">Fetching information...</span>
+                </div>
+
+                <!-- Error -->
+                <div id="error" class="hidden bg-red-50 border-l-4 border-red-500 text-red-700 p-4 mb-6 rounded-md shadow-sm"></div>
+
+                <!-- Playlist View (hidden by default) -->
+                <div id="playlistView" class="hidden fade-in mb-6">
+                    <h2 class="text-2xl font-bold text-gray-800 mb-4" id="playlistTitle"></h2>
+                    <div id="videosList" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                </div>
+
+                <!-- Single Video View (hidden by default) -->
+                <div id="videoView" class="hidden fade-in">
+                    <!-- Video Details Card -->
+                    <div class="bg-white rounded-2xl shadow-xl overflow-hidden mb-6 border border-white/50">
+                        <div class="md:flex">
+                            <div class="md:w-1/3">
+                                <img id="thumbnail" src="" alt="Video thumbnail" class="w-full h-48 md:h-full object-cover">
+                            </div>
+                            <div class="md:w-2/3 p-6">
+                                <h2 id="videoTitle" class="text-2xl font-bold text-gray-800 mb-2"></h2>
+                                <p id="duration" class="text-gray-500 mb-4 flex items-center gap-1">
+                                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                                    <span></span>
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Formats -->
+                    <h3 class="text-xl font-semibold text-gray-700 mb-4">Available Formats</h3>
+                    <div id="formatsContainer" class="grid grid-cols-1 md:grid-cols-2 gap-4"></div>
+                </div>
+
+                <!-- Download Progress Modal (hidden by default) -->
+                <div id="progressModal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden z-50">
+                    <div class="bg-white rounded-2xl p-8 max-w-md w-full">
+                        <h3 class="text-xl font-bold mb-4">Downloading...</h3>
+                        <div class="w-full bg-gray-200 rounded-full h-4 mb-2">
+                            <div id="progressBar" class="bg-blue-600 h-4 rounded-full progress-bar" style="width: 0%"></div>
+                        </div>
+                        <p id="progressStatus" class="text-sm text-gray-600 mb-4">Starting...</p>
+                        <button onclick="cancelDownload()" class="text-red-500 hover:text-red-700 text-sm">Cancel</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- History Sidebar -->
+            <div class="lg:w-1/4">
+                <div class="bg-white rounded-2xl shadow-xl p-6 border border-white/50 sticky top-4">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4 flex items-center gap-2">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        Download History
+                    </h2>
+                    <div id="historyList" class="space-y-3 max-h-96 overflow-y-auto">
+                        <!-- History items will be populated here -->
+                        <p class="text-gray-400 text-sm">No downloads yet</p>
+                    </div>
+                    <button onclick="loadHistory()" class="mt-4 text-blue-600 hover:text-blue-800 text-sm flex items-center gap-1">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                        Refresh
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // State
+        let currentTaskId = null;
+        let pollInterval = null;
+        let currentVideoUrl = null; // Stores the URL of the currently viewed video
+
+        // Elements
+        const urlInput = document.getElementById('videoUrl');
+        const fetchBtn = document.getElementById('fetchBtn');
+        const loadingDiv = document.getElementById('loading');
+        const errorDiv = document.getElementById('error');
+        const playlistView = document.getElementById('playlistView');
+        const videoView = document.getElementById('videoView');
+        const playlistTitle = document.getElementById('playlistTitle');
+        const videosList = document.getElementById('videosList');
+        const thumbnail = document.getElementById('thumbnail');
+        const videoTitle = document.getElementById('videoTitle');
+        const durationSpan = document.querySelector('#duration span');
+        const formatsContainer = document.getElementById('formatsContainer');
+        const progressModal = document.getElementById('progressModal');
+        const progressBar = document.getElementById('progressBar');
+        const progressStatus = document.getElementById('progressStatus');
+        const historyList = document.getElementById('historyList');
+
+        // Initialize
+        loadHistory();
+
+        async function fetchInfo() {
+            const url = urlInput.value.trim();
+            if (!url) {
+                showError('Please enter a YouTube URL');
+                return;
+            }
+
+            hideError();
+            playlistView.classList.add('hidden');
+            videoView.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+            fetchBtn.disabled = true;
+
+            try {
+                const response = await fetch('/get_info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Failed to fetch info');
+                }
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+
+                if (data.type === 'playlist') {
+                    displayPlaylist(data);
+                } else {
+                    displayVideo(data, url);
+                }
+            } catch (error) {
+                showError(error.message);
+            } finally {
+                loadingDiv.classList.add('hidden');
+                fetchBtn.disabled = false;
+            }
+        }
+
+        function displayPlaylist(data) {
+            playlistTitle.textContent = data.title || 'Playlist';
+            videosList.innerHTML = '';
+            data.videos.forEach(video => {
+                const card = document.createElement('div');
+                card.className = 'bg-white rounded-xl overflow-hidden shadow-md hover:shadow-lg transition cursor-pointer border border-gray-100';
+                card.innerHTML = `
+                    <img src="${video.thumbnail || 'https://via.placeholder.com/320x180'}" class="w-full h-32 object-cover">
+                    <div class="p-3">
+                        <p class="font-semibold text-gray-800 truncate">${video.title}</p>
+                        <p class="text-sm text-gray-500">${formatDuration(video.duration)}</p>
+                    </div>
+                `;
+                card.addEventListener('click', () => fetchVideoInfo(video.url));
+                videosList.appendChild(card);
+            });
+            playlistView.classList.remove('hidden');
+        }
+
+        async function fetchVideoInfo(url) {
+            loadingDiv.classList.remove('hidden');
+            playlistView.classList.add('hidden');
+            try {
+                const response = await fetch('/get_info', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ url })
+                });
+                const data = await response.json();
+                if (!response.ok || data.error) throw new Error(data.error || 'Error');
+                displayVideo(data, url);
+            } catch (error) {
+                showError(error.message);
+                playlistView.classList.remove('hidden');
+            } finally {
+                loadingDiv.classList.add('hidden');
+            }
+        }
+
+        function displayVideo(info, videoUrl) {
+            // Store the URL for this video
+            currentVideoUrl = videoUrl;
+
+            thumbnail.src = info.thumbnail || 'https://via.placeholder.com/640x360';
+            videoTitle.textContent = info.title;
+            durationSpan.textContent = formatDuration(info.duration);
+
+            formatsContainer.innerHTML = '';
+            info.formats.forEach(format => {
+                const filesize = format.filesize ? (format.filesize / 1024 / 1024).toFixed(2) + ' MB' : 'Unknown size';
+                const typeLabel = format.vcodec !== 'none' && format.acodec !== 'none' ? 'Video+Audio' :
+                                 format.vcodec !== 'none' ? 'Video only' : 'Audio only';
+
+                const card = document.createElement('div');
+                card.className = 'bg-white rounded-xl p-5 border border-gray-100 hover:border-blue-200 hover:shadow-md transition flex flex-col';
+                card.innerHTML = `
+                    <div class="flex justify-between items-start mb-3">
+                        <span class="px-2 py-1 bg-blue-50 text-blue-700 text-xs font-semibold rounded-full">${format.ext.toUpperCase()}</span>
+                        <span class="text-xs text-gray-400">${typeLabel}</span>
+                    </div>
+                    <div class="mb-4">
+                        <p class="text-lg font-bold text-gray-800">${format.quality || 'N/A'}</p>
+                        <p class="text-sm text-gray-500">${filesize}</p>
+                    </div>
+                    <div class="mb-3">
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Filename (optional)</label>
+                        <input type="text" class="filename-input w-full px-3 py-2 border border-gray-300 rounded-lg text-sm" 
+                               placeholder="My video" value="${sanitizeFilename(info.title)}">
+                    </div>
+                    <button onclick="startDownload('${format.format_id}', this)" 
+                            class="download-btn w-full bg-green-50 hover:bg-green-100 text-green-700 font-medium py-2 px-4 rounded-lg transition border border-green-200">
+                        Download
+                    </button>
+                `;
+                formatsContainer.appendChild(card);
+            });
+
+            videoView.classList.remove('hidden');
+        }
+
+        function sanitizeFilename(name) {
+            return name.replace(/[^\w\s-]/g, '').trim();
+        }
+
+        function formatDuration(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        async function startDownload(formatId, btnElement) {
+            if (!currentVideoUrl) {
+                showError('Video URL missing. Please try again.');
+                return;
+            }
+
+            const card = btnElement.closest('.bg-white');
+            const filenameInput = card.querySelector('.filename-input');
+            const customFilename = filenameInput ? filenameInput.value.trim() : '';
+
+            // Disable button
+            btnElement.disabled = true;
+            btnElement.textContent = 'Starting...';
+
+            try {
+                const response = await fetch('/start_download', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        url: currentVideoUrl,
+                        format_id: formatId,
+                        custom_filename: customFilename
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Failed to start download');
+                
+                currentTaskId = data.task_id;
+                // Show progress modal
+                progressModal.classList.remove('hidden');
+                progressBar.style.width = '0%';
+                progressStatus.textContent = 'Starting...';
+                
+                // Start polling
+                pollInterval = setInterval(() => pollProgress(currentTaskId), 500);
+            } catch (error) {
+                showError(error.message);
+                btnElement.disabled = false;
+                btnElement.textContent = 'Download';
+            }
+        }
+
+        async function pollProgress(taskId) {
+            try {
+                const response = await fetch(`/progress/${taskId}`);
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error);
+
+                const progress = data.progress || 0;
+                progressBar.style.width = progress + '%';
+                progressStatus.textContent = data.status === 'downloading' ? `Downloading... ${progress}%` : data.status;
+
+                if (data.status === 'done') {
+                    clearInterval(pollInterval);
+                    progressStatus.textContent = 'Complete! Preparing file...';
+                    // Redirect to download
+                    window.location.href = `/download_file/${taskId}`;
+                    setTimeout(() => {
+                        progressModal.classList.add('hidden');
+                        // Re-enable download buttons
+                        document.querySelectorAll('.download-btn').forEach(btn => {
+                            btn.disabled = false;
+                            btn.textContent = 'Download';
+                        });
+                    }, 2000);
+                } else if (data.status === 'error') {
+                    clearInterval(pollInterval);
+                    showError(data.error || 'Download failed');
+                    progressModal.classList.add('hidden');
+                    document.querySelectorAll('.download-btn').forEach(btn => {
+                        btn.disabled = false;
+                        btn.textContent = 'Download';
+                    });
+                }
+            } catch (error) {
+                clearInterval(pollInterval);
+                showError('Progress check failed');
+                progressModal.classList.add('hidden');
+            }
+        }
+
+        function cancelDownload() {
+            if (currentTaskId && pollInterval) {
+                clearInterval(pollInterval);
+                // Optionally tell server to cancel (not implemented)
+                progressModal.classList.add('hidden');
+                document.querySelectorAll('.download-btn').forEach(btn => {
+                    btn.disabled = false;
+                    btn.textContent = 'Download';
+                });
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                const response = await fetch('/history');
+                const data = await response.json();
+                historyList.innerHTML = '';
+                if (data.length === 0) {
+                    historyList.innerHTML = '<p class="text-gray-400 text-sm">No downloads yet</p>';
+                } else {
+                    data.forEach(item => {
+                        const div = document.createElement('div');
+                        div.className = 'p-3 bg-gray-50 rounded-lg text-sm';
+                        div.innerHTML = `
+                            <p class="font-medium truncate">${item.title}</p>
+                            <p class="text-xs text-gray-500">${item.format_note || 'Unknown format'} • ${new Date(item.timestamp).toLocaleString()}</p>
+                            <button onclick="reDownload('${item.url}', '${item.format_id}')" class="text-blue-600 hover:text-blue-800 text-xs mt-1">Download again</button>
+                        `;
+                        historyList.appendChild(div);
+                    });
+                }
+            } catch (error) {
+                console.error('Failed to load history', error);
+            }
+        }
+
+        function reDownload(url, formatId) {
+            urlInput.value = url;
+            fetchInfo(); // This will fetch and then user can select format again
+        }
+
+        function showError(message) {
+            errorDiv.textContent = message;
+            errorDiv.classList.remove('hidden');
+        }
+
+        function hideError() {
+            errorDiv.classList.add('hidden');
+        }
+
+        // Allow Enter key
+        urlInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') fetchInfo();
+        });
+
+        // Load history on page load
+        loadHistory();
+    </script>
+</body>
+</html>
