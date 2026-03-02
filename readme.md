@@ -135,7 +135,7 @@ Users are responsible for complying with YouTube's terms of service and local co
 ## 👨‍💻 Author
 
 **Enock Deghost**  
-Aspiring Software Engineer 🚀 
+Aspiring Software 🚀 
 GitHub: https://github.com/enockdeghost
 
 ---
