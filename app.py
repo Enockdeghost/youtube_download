@@ -4,6 +4,8 @@ import uuid
 import threading
 import zipfile
 import logging
+import time
+import random
 from flask import Flask, render_template, request, jsonify, send_file, after_this_request
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -23,13 +25,17 @@ def check_cookies_file():
     if not os.path.exists(COOKIES_FILE):
         logger.warning(f"Cookies file not found at {COOKIES_FILE}")
         return False
-    with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
-        first_line = f.readline().strip()
-        if not (first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File')):
-            logger.error(f"Cookies file has invalid format. First line: {first_line}")
-            return False
-        logger.info("Cookies file looks valid.")
-    return True
+    try:
+        with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            if not (first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File')):
+                logger.error(f"Cookies file has invalid format. First line: {first_line}")
+                return False
+            logger.info("Cookies file looks valid (first line OK).")
+            return True
+    except Exception as e:
+        logger.error(f"Error reading cookies file: {e}")
+        return False
 
 cookies_valid = check_cookies_file()
 
@@ -61,13 +67,16 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     temp_dir = tempfile.mkdtemp()
     outtmpl = os.path.join(temp_dir, '%(title)s.%(ext)s')
 
+    # Add a random delay to avoid rate limiting (5-15 seconds)
+    time.sleep(random.uniform(5, 15))
+
     ydl_opts = {
         'format': format_id,
         'outtmpl': outtmpl,
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [progress_hook(task_id)],
-        'logger': logger,  # Integrate our logger
+        'logger': logger,
     }
 
     # Use global cookies file if it exists and is valid
@@ -159,7 +168,6 @@ def get_video_info(url):
         'extract_flat': False,
         'logger': logger,
     }
-    # Use cookies for info extraction too
     if os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
 
@@ -167,7 +175,6 @@ def get_video_info(url):
         try:
             info = ydl.extract_info(url, download=False)
             if 'entries' in info:
-                # Playlist
                 videos = []
                 for entry in info['entries']:
                     if entry:
@@ -179,7 +186,6 @@ def get_video_info(url):
                         })
                 return {'type': 'playlist', 'title': info.get('title', 'Playlist'), 'videos': videos}
             else:
-                # Single video: collect formats
                 formats = []
                 for f in info['formats']:
                     if f.get('filesize') is not None or f.get('filesize_approx') is not None:
@@ -199,7 +205,6 @@ def get_video_info(url):
 
                 formats.sort(key=lambda x: x['filesize'], reverse=True)
 
-                # Add best video+audio virtual format
                 has_video = any(f['vcodec'] != 'none' for f in formats)
                 has_audio = any(f['acodec'] != 'none' for f in formats)
                 if has_video and has_audio:
