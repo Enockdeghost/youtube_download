@@ -35,11 +35,12 @@ def get_po_token():
                 with open(PO_TOKEN_FILE, 'r') as f:
                     _po_token = f.read().strip()
                 _po_token_mtime = mtime
-                logger.info("PO Token loaded/refreshed.")
+                logger.info("✅ PO Token loaded/refreshed successfully.")
             except Exception as e:
-                logger.error(f"Failed to read PO token: {e}")
+                logger.error(f"❌ Failed to read PO token: {e}")
                 return None
         return _po_token
+    logger.warning("⚠️ PO token file not found.")
     return None
 
 # --- In-memory download task storage ---
@@ -71,7 +72,9 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     outtmpl = os.path.join(temp_dir, '%(title)s.%(ext)s')
 
     # Add a random delay to avoid rate limiting (5-15 seconds)
-    time.sleep(random.uniform(5, 15))
+    delay = random.uniform(5, 15)
+    logger.info(f"⏱️ Waiting {delay:.1f} seconds before download...")
+    time.sleep(delay)
 
     # Base options
     ydl_opts = {
@@ -84,10 +87,10 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'extractor_args': {},
     }
 
-    # --- PO Token Authentication (Highest Priority) ---
+    # --- Try PO Token Authentication First ---
     po_token = get_po_token()
     if po_token:
-        logger.info("Using PO Token for authentication.")
+        logger.info("🔑 Attempting authentication with PO Token...")
         ydl_opts['extractor_args']['youtube'] = {
             'player_client': ['mweb', 'default'],
             'po_token': po_token
@@ -95,10 +98,10 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     else:
         # Fallback to cookies
         if os.path.exists(COOKIES_FILE):
+            logger.info("🍪 Falling back to cookies file.")
             ydl_opts['cookiefile'] = COOKIES_FILE
-            logger.info("Falling back to cookies file.")
         else:
-            logger.warning("No authentication method available. YouTube will likely block the request.")
+            logger.warning("⚠️ No authentication method available. YouTube will likely block the request.")
 
     # Container for merged formats
     if container and '+' in format_id:
@@ -134,46 +137,70 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     if thumbnail:
         ydl_opts['writethumbnail'] = True
 
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Starting download for {url}")
-            info = ydl.extract_info(url, download=True)
-            downloaded_files = os.listdir(temp_dir)
-            if not downloaded_files:
-                raise Exception("No file downloaded")
+    # --- Attempt Download with Retry Logic ---
+    max_retries = 2
+    for attempt in range(max_retries):
+        try:
+            logger.info(f"📥 Download attempt {attempt + 1}/{max_retries} for {url}")
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                downloaded_files = os.listdir(temp_dir)
+                if not downloaded_files:
+                    raise Exception("No file downloaded")
 
-            # If multiple files, create a zip
-            if len(downloaded_files) > 1 and not custom_filename:
-                zip_path = os.path.join(temp_dir, "download.zip")
-                with zipfile.ZipFile(zip_path, 'w') as zipf:
-                    for f in downloaded_files:
-                        zipf.write(os.path.join(temp_dir, f), arcname=f)
-                file_path = zip_path
-            else:
-                # Find the main file (largest)
-                main_file = max(downloaded_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
-                original_path = os.path.join(temp_dir, main_file)
-
-                if custom_filename:
-                    ext = os.path.splitext(original_path)[1]
-                    new_path = os.path.join(temp_dir, sanitize_filename(custom_filename) + ext)
-                    os.rename(original_path, new_path)
-                    file_path = new_path
+                # If multiple files, create a zip
+                if len(downloaded_files) > 1 and not custom_filename:
+                    zip_path = os.path.join(temp_dir, "download.zip")
+                    with zipfile.ZipFile(zip_path, 'w') as zipf:
+                        for f in downloaded_files:
+                            zipf.write(os.path.join(temp_dir, f), arcname=f)
+                    file_path = zip_path
                 else:
-                    file_path = original_path
+                    # Find the main file (largest)
+                    main_file = max(downloaded_files, key=lambda f: os.path.getsize(os.path.join(temp_dir, f)))
+                    original_path = os.path.join(temp_dir, main_file)
 
-            download_tasks[task_id]['file_path'] = file_path
-            download_tasks[task_id]['status'] = 'done'
-            logger.info(f"Download complete: {file_path}")
-    except DownloadError as e:
-        error_msg = str(e)
-        logger.error(f"Download error: {error_msg}")
-        download_tasks[task_id]['status'] = 'error'
-        download_tasks[task_id]['error'] = error_msg
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        download_tasks[task_id]['status'] = 'error'
-        download_tasks[task_id]['error'] = str(e)
+                    if custom_filename:
+                        ext = os.path.splitext(original_path)[1]
+                        new_path = os.path.join(temp_dir, sanitize_filename(custom_filename) + ext)
+                        os.rename(original_path, new_path)
+                        file_path = new_path
+                    else:
+                        file_path = original_path
+
+                download_tasks[task_id]['file_path'] = file_path
+                download_tasks[task_id]['status'] = 'done'
+                logger.info(f"✅ Download complete: {file_path}")
+                return  # Success, exit function
+
+        except DownloadError as e:
+            error_msg = str(e)
+            logger.error(f"❌ Download attempt {attempt + 1} failed: {error_msg}")
+
+            # If this is the first attempt and we used PO token, try without it
+            if attempt == 0 and po_token and 'Sign in to confirm' in error_msg:
+                logger.warning("🔄 PO Token rejected. Retrying without token...")
+                # Remove token and try with default clients
+                if 'extractor_args' in ydl_opts:
+                    ydl_opts['extractor_args'].pop('youtube', None)
+                # Also try cookies if available
+                if os.path.exists(COOKIES_FILE):
+                    ydl_opts['cookiefile'] = COOKIES_FILE
+            else:
+                # No more retries, mark as error
+                download_tasks[task_id]['status'] = 'error'
+                download_tasks[task_id]['error'] = error_msg
+                return
+
+        except Exception as e:
+            logger.error(f"❌ Unexpected error: {str(e)}")
+            download_tasks[task_id]['status'] = 'error'
+            download_tasks[task_id]['error'] = str(e)
+            return
+
+    # If we exhausted retries
+    download_tasks[task_id]['status'] = 'error'
+    download_tasks[task_id]['error'] = "All download attempts failed."
 
 def get_video_info(url):
     ydl_opts = {
@@ -193,10 +220,13 @@ def get_video_info(url):
     elif os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
 
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        try:
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"🔍 Fetching info for {url}")
             info = ydl.extract_info(url, download=False)
+            
             if 'entries' in info:
+                # Playlist
                 videos = []
                 for entry in info['entries']:
                     if entry:
@@ -208,6 +238,7 @@ def get_video_info(url):
                         })
                 return {'type': 'playlist', 'title': info.get('title', 'Playlist'), 'videos': videos}
             else:
+                # Single video: collect formats
                 formats = []
                 for f in info['formats']:
                     if f.get('filesize') is not None or f.get('filesize_approx') is not None:
@@ -251,12 +282,23 @@ def get_video_info(url):
                     'formats': formats,
                     'webpage_url': info.get('webpage_url', url)
                 }
-        except DownloadError as e:
-            logger.error(f"Info extraction error: {str(e)}")
-            return {'error': f"YouTube blocked the request: {str(e)}. PO Token may be expired or invalid."}
-        except Exception as e:
-            logger.error(f"Unexpected error in get_video_info: {str(e)}")
-            return {'error': str(e)}
+    except DownloadError as e:
+        logger.error(f"❌ Info extraction error: {str(e)}")
+        # If token error, try once without token
+        if 'Sign in to confirm' in str(e) and po_token:
+            logger.warning("🔄 PO Token rejected for info fetch, retrying without...")
+            ydl_opts.pop('extractor_args', None)
+            ydl_opts.pop('cookiefile', None)
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=False)
+                    return {'type': 'video', 'title': info.get('title', 'Unknown'), 'formats': []}
+            except Exception as e2:
+                return {'error': f"YouTube blocked the request: {str(e2)}"}
+        return {'error': f"YouTube blocked the request: {str(e)}"}
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in get_video_info: {str(e)}")
+        return {'error': str(e)}
 
 # --- Routes ---
 @app.route('/')
