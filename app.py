@@ -12,6 +12,7 @@ app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf'
 # Path to your cookies file (exported from a logged-in YouTube session)
 COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
 
+# --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
 
 # --- Helper functions ---
@@ -50,6 +51,8 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     # Use global cookies file if it exists
     if os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
+    else:
+        app.logger.warning("Cookies file not found. YouTube may block the request.")
 
     # Container for merged formats
     if container and '+' in format_id:
