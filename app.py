@@ -17,20 +17,30 @@ app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- PO Token Configuration ---
-# Follow the PO Token Guide to generate these: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
-# Place your token in a file named 'po_token.txt' in the same directory.
+# --- File paths ---
 PO_TOKEN_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'po_token.txt'))
-PO_TOKEN = None
-if os.path.exists(PO_TOKEN_FILE):
-    with open(PO_TOKEN_FILE, 'r') as f:
-        PO_TOKEN = f.read().strip()
-    logger.info("PO Token loaded successfully.")
-else:
-    logger.warning("po_token.txt not found. Will attempt cookies or fallback methods.")
-
-# Optional cookies file as fallback (still useful for some features)
 COOKIES_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+
+# --- PO Token caching with auto-reload ---
+_po_token = None
+_po_token_mtime = 0
+
+def get_po_token():
+    """Read PO token from file, reload if file modified."""
+    global _po_token, _po_token_mtime
+    if os.path.exists(PO_TOKEN_FILE):
+        mtime = os.path.getmtime(PO_TOKEN_FILE)
+        if mtime > _po_token_mtime:
+            try:
+                with open(PO_TOKEN_FILE, 'r') as f:
+                    _po_token = f.read().strip()
+                _po_token_mtime = mtime
+                logger.info("PO Token loaded/refreshed.")
+            except Exception as e:
+                logger.error(f"Failed to read PO token: {e}")
+                return None
+        return _po_token
+    return None
 
 # --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
@@ -71,18 +81,19 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'no_warnings': True,
         'progress_hooks': [progress_hook(task_id)],
         'logger': logger,
-        'extractor_args': {},  # Will be filled below
+        'extractor_args': {},
     }
 
-    # --- PO Token Configuration (Highest Priority) ---
-    if PO_TOKEN:
+    # --- PO Token Authentication (Highest Priority) ---
+    po_token = get_po_token()
+    if po_token:
         logger.info("Using PO Token for authentication.")
         ydl_opts['extractor_args']['youtube'] = {
-            'player_client': ['mweb', 'default'],  # mweb client works well with tokens
-            'po_token': PO_TOKEN
+            'player_client': ['mweb', 'default'],
+            'po_token': po_token
         }
     else:
-        # Fallback to cookies if PO Token is not available
+        # Fallback to cookies
         if os.path.exists(COOKIES_FILE):
             ydl_opts['cookiefile'] = COOKIES_FILE
             logger.info("Falling back to cookies file.")
@@ -131,7 +142,7 @@ def background_download(url, format_id, custom_filename, container, start_time, 
             if not downloaded_files:
                 raise Exception("No file downloaded")
 
-            # If multiple files (e.g., video+subtitles+thumbnail), create a zip
+            # If multiple files, create a zip
             if len(downloaded_files) > 1 and not custom_filename:
                 zip_path = os.path.join(temp_dir, "download.zip")
                 with zipfile.ZipFile(zip_path, 'w') as zipf:
@@ -173,11 +184,11 @@ def get_video_info(url):
         'extractor_args': {},
     }
 
-    # Use PO Token if available
-    if PO_TOKEN:
+    po_token = get_po_token()
+    if po_token:
         ydl_opts['extractor_args']['youtube'] = {
             'player_client': ['mweb', 'default'],
-            'po_token': PO_TOKEN
+            'po_token': po_token
         }
     elif os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
@@ -247,7 +258,7 @@ def get_video_info(url):
             logger.error(f"Unexpected error in get_video_info: {str(e)}")
             return {'error': str(e)}
 
-# --- Routes (unchanged from previous version) ---
+# --- Routes ---
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -327,12 +338,12 @@ def download_file(task_id):
 @app.route('/check_auth', methods=['GET'])
 def check_auth_endpoint():
     """Diagnostic endpoint to verify authentication status."""
-    status = {
-        'po_token': {'present': PO_TOKEN is not None},
+    po_token = get_po_token()
+    return jsonify({
+        'po_token': {'present': po_token is not None},
         'cookies': {'present': os.path.exists(COOKIES_FILE)},
-        'auth_method': 'PO Token' if PO_TOKEN else ('Cookies' if os.path.exists(COOKIES_FILE) else 'None')
-    }
-    return jsonify(status)
+        'auth_method': 'PO Token' if po_token else ('Cookies' if os.path.exists(COOKIES_FILE) else 'None')
+    })
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
