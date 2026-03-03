@@ -103,10 +103,12 @@
     </div>
 
     <script>
+        // State
         let currentTaskId = null;
         let pollInterval = null;
         let currentVideoUrl = null;
 
+        // Elements
         const urlInput = document.getElementById('videoUrl');
         const fetchBtn = document.getElementById('fetchBtn');
         const loadingDiv = document.getElementById('loading');
@@ -123,6 +125,33 @@
         const progressBar = document.getElementById('progressBar');
         const progressStatus = document.getElementById('progressStatus');
 
+        // Helper: handle fetch response, parse JSON safely
+        async function handleResponse(response) {
+            const contentType = response.headers.get('content-type');
+            if (!response.ok) {
+                // Try to get error message from JSON, otherwise use status text
+                if (contentType && contentType.includes('application/json')) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || `HTTP error ${response.status}`);
+                } else {
+                    // Not JSON – likely HTML error page
+                    const text = await response.text();
+                    // Extract title or first line for a concise error
+                    const match = text.match(/<title>(.*?)<\/title>/);
+                    const title = match ? match[1] : text.substring(0, 200);
+                    throw new Error(`Server error (${response.status}): ${title}`);
+                }
+            }
+            if (contentType && contentType.includes('application/json')) {
+                return response.json();
+            } else {
+                // Unexpected non-JSON success response
+                const text = await response.text();
+                throw new Error(`Unexpected response format: ${text.substring(0, 100)}`);
+            }
+        }
+
+        // Fetch video info
         async function fetchInfo() {
             const url = urlInput.value.trim();
             if (!url) {
@@ -143,17 +172,14 @@
                     body: JSON.stringify({ url })
                 });
                 
-                if (response.status === 429) {
-                    throw new Error('Rate limit exceeded. Please wait.');
-                }
+                const data = await handleResponse(response);
                 
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || 'Failed to fetch info');
-
                 if (data.type === 'playlist') {
                     displayPlaylist(data);
-                } else {
+                } else if (data.type === 'video') {
                     displayVideo(data, url);
+                } else {
+                    throw new Error('Unknown response type');
                 }
             } catch (error) {
                 showError(error.message);
@@ -191,9 +217,7 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ url })
                 });
-                if (response.status === 429) throw new Error('Rate limit exceeded');
-                const data = await response.json();
-                if (!response.ok || data.error) throw new Error(data.error || 'Error');
+                const data = await handleResponse(response);
                 displayVideo(data, url);
             } catch (error) {
                 showError(error.message);
@@ -315,13 +339,8 @@
                     })
                 });
 
-                if (response.status === 429) {
-                    throw new Error('Rate limit exceeded. Please slow down.');
-                }
-
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Failed to start download');
-
+                const data = await handleResponse(response);
+                
                 currentTaskId = data.task_id;
                 progressModal.classList.remove('hidden');
                 progressBar.style.width = '0%';
@@ -337,14 +356,7 @@
         async function pollProgress(taskId) {
             try {
                 const response = await fetch(`/progress/${taskId}`);
-                if (response.status === 429) {
-                    clearInterval(pollInterval);
-                    showError('Rate limit exceeded while checking progress.');
-                    progressModal.classList.add('hidden');
-                    return;
-                }
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error);
+                const data = await handleResponse(response);
 
                 const progress = data.progress || 0;
                 progressBar.style.width = progress + '%';
@@ -372,8 +384,12 @@
                 }
             } catch (error) {
                 clearInterval(pollInterval);
-                showError('Progress check failed');
+                showError('Progress check failed: ' + error.message);
                 progressModal.classList.add('hidden');
+                document.querySelectorAll('.download-btn').forEach(btn => {
+                    btn.disabled = false;
+                    btn.textContent = 'Download';
+                });
             }
         }
 
@@ -397,6 +413,7 @@
             errorDiv.classList.add('hidden');
         }
 
+        // Enter key
         urlInput.addEventListener('keypress', (e) => {
             if (e.key === 'Enter') fetchInfo();
         });
