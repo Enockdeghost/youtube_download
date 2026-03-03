@@ -3,14 +3,35 @@ import tempfile
 import uuid
 import threading
 import zipfile
+import logging
 from flask import Flask, render_template, request, jsonify, send_file, after_this_request
 import yt_dlp
+from yt_dlp.utils import DownloadError
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf' 
+app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf'
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Path to your cookies file (exported from a logged-in YouTube session)
-COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
+COOKIES_FILE = os.environ.get('COOKIES_FILE', os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+
+# Verify cookies file existence and basic format on startup
+def check_cookies_file():
+    if not os.path.exists(COOKIES_FILE):
+        logger.warning(f"Cookies file not found at {COOKIES_FILE}")
+        return False
+    with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
+        first_line = f.readline().strip()
+        if not (first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File')):
+            logger.error(f"Cookies file has invalid format. First line: {first_line}")
+            return False
+        logger.info("Cookies file looks valid.")
+    return True
+
+cookies_valid = check_cookies_file()
 
 # --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
@@ -35,7 +56,7 @@ def progress_hook(task_id):
             download_tasks[task_id]['status'] = 'finished'
     return hook
 
-def background_download(url, format_id, custom_filename, container, start_time, end_time, 
+def background_download(url, format_id, custom_filename, container, start_time, end_time,
                         audio_only, audio_bitrate, subtitle_langs, thumbnail, task_id):
     temp_dir = tempfile.mkdtemp()
     outtmpl = os.path.join(temp_dir, '%(title)s.%(ext)s')
@@ -46,13 +67,15 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'quiet': True,
         'no_warnings': True,
         'progress_hooks': [progress_hook(task_id)],
+        'logger': logger,  # Integrate our logger
     }
 
-    # Use global cookies file if it exists
+    # Use global cookies file if it exists and is valid
     if os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
+        logger.info(f"Using cookies file: {COOKIES_FILE}")
     else:
-        app.logger.warning("Cookies file not found. YouTube may block the request.")
+        logger.warning("Cookies file not found. YouTube may block the request.")
 
     # Container for merged formats
     if container and '+' in format_id:
@@ -90,11 +113,12 @@ def background_download(url, format_id, custom_filename, container, start_time, 
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            logger.info(f"Starting download for {url}")
             info = ydl.extract_info(url, download=True)
             downloaded_files = os.listdir(temp_dir)
             if not downloaded_files:
                 raise Exception("No file downloaded")
-            
+
             # If multiple files (e.g., video+subtitles+thumbnail), create a zip
             if len(downloaded_files) > 1 and not custom_filename:
                 zip_path = os.path.join(temp_dir, "download.zip")
@@ -117,7 +141,14 @@ def background_download(url, format_id, custom_filename, container, start_time, 
 
             download_tasks[task_id]['file_path'] = file_path
             download_tasks[task_id]['status'] = 'done'
+            logger.info(f"Download complete: {file_path}")
+    except DownloadError as e:
+        error_msg = str(e)
+        logger.error(f"Download error: {error_msg}")
+        download_tasks[task_id]['status'] = 'error'
+        download_tasks[task_id]['error'] = error_msg
     except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
         download_tasks[task_id]['status'] = 'error'
         download_tasks[task_id]['error'] = str(e)
 
@@ -126,6 +157,7 @@ def get_video_info(url):
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'logger': logger,
     }
     # Use cookies for info extraction too
     if os.path.exists(COOKIES_FILE):
@@ -192,7 +224,11 @@ def get_video_info(url):
                     'formats': formats,
                     'webpage_url': info.get('webpage_url', url)
                 }
+        except DownloadError as e:
+            logger.error(f"Info extraction error: {str(e)}")
+            return {'error': f"YouTube blocked the request: {str(e)}. Make sure cookies are valid."}
         except Exception as e:
+            logger.error(f"Unexpected error in get_video_info: {str(e)}")
             return {'error': str(e)}
 
 # --- Routes ---
@@ -271,6 +307,21 @@ def download_file(task_id):
         return response
 
     return send_file(file_path, as_attachment=True)
+
+@app.route('/check_cookies', methods=['GET'])
+def check_cookies_endpoint():
+    """Diagnostic endpoint to verify cookies file status."""
+    if not os.path.exists(COOKIES_FILE):
+        return jsonify({'status': 'error', 'message': f'Cookies file not found at {COOKIES_FILE}'})
+    try:
+        with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
+            first_line = f.readline().strip()
+            if first_line.startswith('# Netscape') or first_line.startswith('# HTTP'):
+                return jsonify({'status': 'ok', 'message': 'Cookies file exists and format looks correct.'})
+            else:
+                return jsonify({'status': 'error', 'message': f'Invalid first line: {first_line}'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'message': str(e)})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
