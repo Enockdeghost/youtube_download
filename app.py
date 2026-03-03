@@ -120,7 +120,6 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         }]
         # Force audio-only format if not already
         if format_id not in ['bestaudio', 'bestaudio/best']:
-            # Override format to bestaudio if user wants audio only
             ydl_opts['format'] = 'bestaudio/best'
 
     # Subtitles
@@ -347,5 +346,6 @@ def get_captcha():
     question = generate_captcha()
     return jsonify({'question': question})
 
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
