@@ -17,27 +17,31 @@ app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Path to your cookies file (exported from a logged-in YouTube session)
-COOKIES_FILE = os.environ.get('COOKIES_FILE', os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+# Absolute path to cookies file (place it in the same directory as app.py)
+COOKIES_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
+logger.info(f"Looking for cookies file at: {COOKIES_FILE}")
 
-# Verify cookies file existence and basic format on startup
-def check_cookies_file():
+def validate_cookies_file():
+    """Check if cookies file exists and has correct Netscape format."""
     if not os.path.exists(COOKIES_FILE):
-        logger.warning(f"Cookies file not found at {COOKIES_FILE}")
+        logger.error("Cookies file NOT FOUND.")
         return False
     try:
         with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
             first_line = f.readline().strip()
-            if not (first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File')):
-                logger.error(f"Cookies file has invalid format. First line: {first_line}")
+            if first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File'):
+                logger.info("Cookies file format appears valid.")
+                return True
+            else:
+                logger.error(f"Invalid cookies file format. First line: {first_line}")
                 return False
-            logger.info("Cookies file looks valid (first line OK).")
-            return True
     except Exception as e:
         logger.error(f"Error reading cookies file: {e}")
         return False
 
-cookies_valid = check_cookies_file()
+cookies_ok = validate_cookies_file()
+if not cookies_ok:
+    logger.warning("YouTube downloads will likely fail without valid cookies.")
 
 # --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
@@ -79,7 +83,7 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'logger': logger,
     }
 
-    # Use global cookies file if it exists and is valid
+    # Use cookies file if it exists and is valid
     if os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
         logger.info(f"Using cookies file: {COOKIES_FILE}")
