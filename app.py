@@ -17,31 +17,20 @@ app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf'
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Absolute path to cookies file (place it in the same directory as app.py)
+# --- PO Token Configuration ---
+# Follow the PO Token Guide to generate these: https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide
+# Place your token in a file named 'po_token.txt' in the same directory.
+PO_TOKEN_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'po_token.txt'))
+PO_TOKEN = None
+if os.path.exists(PO_TOKEN_FILE):
+    with open(PO_TOKEN_FILE, 'r') as f:
+        PO_TOKEN = f.read().strip()
+    logger.info("PO Token loaded successfully.")
+else:
+    logger.warning("po_token.txt not found. Will attempt cookies or fallback methods.")
+
+# Optional cookies file as fallback (still useful for some features)
 COOKIES_FILE = os.path.abspath(os.path.join(os.path.dirname(__file__), 'cookies.txt'))
-logger.info(f"Looking for cookies file at: {COOKIES_FILE}")
-
-def validate_cookies_file():
-    """Check if cookies file exists and has correct Netscape format."""
-    if not os.path.exists(COOKIES_FILE):
-        logger.error("Cookies file NOT FOUND.")
-        return False
-    try:
-        with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            if first_line.startswith('# Netscape HTTP Cookie File') or first_line.startswith('# HTTP Cookie File'):
-                logger.info("Cookies file format appears valid.")
-                return True
-            else:
-                logger.error(f"Invalid cookies file format. First line: {first_line}")
-                return False
-    except Exception as e:
-        logger.error(f"Error reading cookies file: {e}")
-        return False
-
-cookies_ok = validate_cookies_file()
-if not cookies_ok:
-    logger.warning("YouTube downloads will likely fail without valid cookies.")
 
 # --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
@@ -74,6 +63,7 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     # Add a random delay to avoid rate limiting (5-15 seconds)
     time.sleep(random.uniform(5, 15))
 
+    # Base options
     ydl_opts = {
         'format': format_id,
         'outtmpl': outtmpl,
@@ -81,14 +71,23 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'no_warnings': True,
         'progress_hooks': [progress_hook(task_id)],
         'logger': logger,
+        'extractor_args': {},  # Will be filled below
     }
 
-    # Use cookies file if it exists and is valid
-    if os.path.exists(COOKIES_FILE):
-        ydl_opts['cookiefile'] = COOKIES_FILE
-        logger.info(f"Using cookies file: {COOKIES_FILE}")
+    # --- PO Token Configuration (Highest Priority) ---
+    if PO_TOKEN:
+        logger.info("Using PO Token for authentication.")
+        ydl_opts['extractor_args']['youtube'] = {
+            'player_client': ['mweb', 'default'],  # mweb client works well with tokens
+            'po_token': PO_TOKEN
+        }
     else:
-        logger.warning("Cookies file not found. YouTube may block the request.")
+        # Fallback to cookies if PO Token is not available
+        if os.path.exists(COOKIES_FILE):
+            ydl_opts['cookiefile'] = COOKIES_FILE
+            logger.info("Falling back to cookies file.")
+        else:
+            logger.warning("No authentication method available. YouTube will likely block the request.")
 
     # Container for merged formats
     if container and '+' in format_id:
@@ -171,8 +170,16 @@ def get_video_info(url):
         'no_warnings': True,
         'extract_flat': False,
         'logger': logger,
+        'extractor_args': {},
     }
-    if os.path.exists(COOKIES_FILE):
+
+    # Use PO Token if available
+    if PO_TOKEN:
+        ydl_opts['extractor_args']['youtube'] = {
+            'player_client': ['mweb', 'default'],
+            'po_token': PO_TOKEN
+        }
+    elif os.path.exists(COOKIES_FILE):
         ydl_opts['cookiefile'] = COOKIES_FILE
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -235,12 +242,12 @@ def get_video_info(url):
                 }
         except DownloadError as e:
             logger.error(f"Info extraction error: {str(e)}")
-            return {'error': f"YouTube blocked the request: {str(e)}. Make sure cookies are valid."}
+            return {'error': f"YouTube blocked the request: {str(e)}. PO Token may be expired or invalid."}
         except Exception as e:
             logger.error(f"Unexpected error in get_video_info: {str(e)}")
             return {'error': str(e)}
 
-# --- Routes ---
+# --- Routes (unchanged from previous version) ---
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -317,20 +324,15 @@ def download_file(task_id):
 
     return send_file(file_path, as_attachment=True)
 
-@app.route('/check_cookies', methods=['GET'])
-def check_cookies_endpoint():
-    """Diagnostic endpoint to verify cookies file status."""
-    if not os.path.exists(COOKIES_FILE):
-        return jsonify({'status': 'error', 'message': f'Cookies file not found at {COOKIES_FILE}'})
-    try:
-        with open(COOKIES_FILE, 'r', encoding='utf-8') as f:
-            first_line = f.readline().strip()
-            if first_line.startswith('# Netscape') or first_line.startswith('# HTTP'):
-                return jsonify({'status': 'ok', 'message': 'Cookies file exists and format looks correct.'})
-            else:
-                return jsonify({'status': 'error', 'message': f'Invalid first line: {first_line}'})
-    except Exception as e:
-        return jsonify({'status': 'error', 'message': str(e)})
+@app.route('/check_auth', methods=['GET'])
+def check_auth_endpoint():
+    """Diagnostic endpoint to verify authentication status."""
+    status = {
+        'po_token': {'present': PO_TOKEN is not None},
+        'cookies': {'present': os.path.exists(COOKIES_FILE)},
+        'auth_method': 'PO Token' if PO_TOKEN else ('Cookies' if os.path.exists(COOKIES_FILE) else 'None')
+    }
+    return jsonify(status)
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
