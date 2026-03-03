@@ -2,67 +2,17 @@ import os
 import tempfile
 import uuid
 import threading
-import sqlite3
-import random
-from flask import Flask, render_template, request, jsonify, send_file, after_this_request, g, session
+import zipfile
+from flask import Flask, render_template, request, jsonify, send_file, after_this_request
 import yt_dlp
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'CVHJ56345Q@$#%Tewrtxf' 
-app.config['DATABASE'] = 'downloads.db'
 
-# --- Database setup ---
-def get_db():
-    db = getattr(g, '_database', None)
-    if db is None:
-        db = g._database = sqlite3.connect(app.config['DATABASE'])
-        db.row_factory = sqlite3.Row
-    return db
+# Path to your cookies file (exported from a logged-in YouTube session)
+COOKIES_FILE = os.path.join(os.path.dirname(__file__), 'cookies.txt')
 
-@app.teardown_appcontext
-def close_db(exception):
-    db = getattr(g, '_database', None)
-    if db is not None:
-        db.close()
-
-def init_db():
-    with app.app_context():
-        db = get_db()
-        db.execute('''
-            CREATE TABLE IF NOT EXISTS downloads (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                url TEXT NOT NULL,
-                title TEXT NOT NULL,
-                format_id TEXT NOT NULL,
-                format_note TEXT,
-                container TEXT DEFAULT 'mp4',
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        cursor = db.execute("PRAGMA table_info(downloads)")
-        columns = [col[1] for col in cursor.fetchall()]
-        if 'container' not in columns:
-            db.execute("ALTER TABLE downloads ADD COLUMN container TEXT DEFAULT 'mp4'")
-        db.commit()
-
-init_db()
-
-# --- In-memory download task storage ---
 download_tasks = {}  # task_id -> {'progress': int, 'status': str, 'file_path': str, 'error': str}
-
-# --- Captcha helpers (simple math) ---
-def generate_captcha():
-    a = random.randint(1, 10)
-    b = random.randint(1, 10)
-    session['captcha_answer'] = a + b
-    session['captcha_question'] = f"{a} + {b} = ?"
-    return session['captcha_question']
-
-def verify_captcha(answer):
-    try:
-        return int(answer) == session.get('captcha_answer')
-    except:
-        return False
 
 # --- Helper functions ---
 def sanitize_filename(name):
@@ -84,7 +34,8 @@ def progress_hook(task_id):
             download_tasks[task_id]['status'] = 'finished'
     return hook
 
-def background_download(url, format_id, custom_filename, container, start_time, end_time, audio_only, audio_bitrate, subtitle_langs, thumbnail, task_id):
+def background_download(url, format_id, custom_filename, container, start_time, end_time, 
+                        audio_only, audio_bitrate, subtitle_langs, thumbnail, task_id):
     temp_dir = tempfile.mkdtemp()
     outtmpl = os.path.join(temp_dir, '%(title)s.%(ext)s')
 
@@ -96,13 +47,16 @@ def background_download(url, format_id, custom_filename, container, start_time, 
         'progress_hooks': [progress_hook(task_id)],
     }
 
+    # Use global cookies file if it exists
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
+
     # Container for merged formats
     if container and '+' in format_id:
         ydl_opts['merge_output_format'] = container
 
     # Video trimming
     if start_time or end_time:
-        # yt-dlp expects --download-sections "*start-end"
         section = "*"
         if start_time:
             section += start_time
@@ -118,7 +72,6 @@ def background_download(url, format_id, custom_filename, container, start_time, 
             'preferredcodec': audio_bitrate.split('k')[0] if audio_bitrate else 'mp3',
             'preferredquality': audio_bitrate.replace('k', '') if audio_bitrate else '192',
         }]
-        # Force audio-only format if not already
         if format_id not in ['bestaudio', 'bestaudio/best']:
             ydl_opts['format'] = 'bestaudio/best'
 
@@ -126,7 +79,7 @@ def background_download(url, format_id, custom_filename, container, start_time, 
     if subtitle_langs:
         ydl_opts['writesubtitles'] = True
         ydl_opts['subtitleslangs'] = subtitle_langs.split(',')
-        ydl_opts['subtitlesformat'] = 'vtt/srt'  # prefer vtt, fallback srt
+        ydl_opts['subtitlesformat'] = 'vtt/srt'
 
     # Thumbnail
     if thumbnail:
@@ -139,10 +92,8 @@ def background_download(url, format_id, custom_filename, container, start_time, 
             if not downloaded_files:
                 raise Exception("No file downloaded")
             
-            # But better to return all? We'll zip them if multiple.
+            # If multiple files (e.g., video+subtitles+thumbnail), create a zip
             if len(downloaded_files) > 1 and not custom_filename:
-                # Create a zip with all files
-                import zipfile
                 zip_path = os.path.join(temp_dir, "download.zip")
                 with zipfile.ZipFile(zip_path, 'w') as zipf:
                     for f in downloaded_files:
@@ -163,17 +114,6 @@ def background_download(url, format_id, custom_filename, container, start_time, 
 
             download_tasks[task_id]['file_path'] = file_path
             download_tasks[task_id]['status'] = 'done'
-
-            # Save to history (optional)
-            with app.app_context():
-                title = info.get('title', 'Unknown')
-                format_note = info.get('format_note', '')
-                db = get_db()
-                db.execute(
-                    'INSERT INTO downloads (url, title, format_id, format_note, container) VALUES (?, ?, ?, ?, ?)',
-                    (url, title, format_id, format_note, container)
-                )
-                db.commit()
     except Exception as e:
         download_tasks[task_id]['status'] = 'error'
         download_tasks[task_id]['error'] = str(e)
@@ -184,6 +124,10 @@ def get_video_info(url):
         'no_warnings': True,
         'extract_flat': False,
     }
+    # Use cookies for info extraction too
+    if os.path.exists(COOKIES_FILE):
+        ydl_opts['cookiefile'] = COOKIES_FILE
+
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         try:
             info = ydl.extract_info(url, download=False)
@@ -251,9 +195,7 @@ def get_video_info(url):
 # --- Routes ---
 @app.route('/')
 def index():
-    if 'captcha_answer' not in session:
-        generate_captcha()
-    return render_template('index.html', captcha_question=session.get('captcha_question', ''))
+    return render_template('index.html')
 
 @app.route('/get_info', methods=['POST'])
 def get_info():
@@ -267,14 +209,6 @@ def get_info():
 
 @app.route('/start_download', methods=['POST'])
 def start_download():
-    # Simple CAPTCHA check
-    download_count = session.get('download_count', 0)
-    if download_count >= 3:
-        captcha = request.json.get('captcha')
-        if not captcha or not verify_captcha(captcha):
-            return jsonify({'error': 'CAPTCHA required or invalid', 'need_captcha': True}), 403
-        generate_captcha()
-
     data = request.get_json()
     url = data.get('url')
     format_id = data.get('format_id')
@@ -300,7 +234,6 @@ def start_download():
     thread.daemon = True
     thread.start()
 
-    session['download_count'] = download_count + 1
     return jsonify({'task_id': task_id})
 
 @app.route('/progress/<task_id>')
@@ -325,26 +258,16 @@ def download_file(task_id):
     @after_this_request
     def cleanup(response):
         try:
-            if os.path.isdir(os.path.dirname(file_path)):
-                # Delete individual file and maybe the directory
+            if os.path.exists(file_path):
                 os.remove(file_path)
-                
+            dir_path = os.path.dirname(file_path)
+            if os.path.isdir(dir_path):
+                os.rmdir(dir_path)
         except Exception as e:
             app.logger.error(f"Cleanup error: {e}")
         return response
 
     return send_file(file_path, as_attachment=True)
-
-@app.route('/history')
-def history():
-    db = get_db()
-    downloads = db.execute('SELECT * FROM downloads ORDER BY timestamp DESC LIMIT 50').fetchall()
-    return jsonify([dict(row) for row in downloads])
-
-@app.route('/captcha')
-def get_captcha():
-    question = generate_captcha()
-    return jsonify({'question': question})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
